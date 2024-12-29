@@ -1,42 +1,41 @@
 import json
-import logging
-from json import JSONDecodeError
-
 import requests
+from typing import Any, Dict, Optional
 
-from hyperliquid.utils.constants import MAINNET_API_URL
-from hyperliquid.utils.error import ClientError, ServerError
-from hyperliquid.utils.types import Any
-
+from .utils.error_handling import APIError, retry_on_failure
 
 class API:
-    def __init__(self, base_url=None):
-        self.base_url = base_url or MAINNET_API_URL
+    def __init__(self, base_url: Optional[str] = None):
+        self.base_url = base_url or "https://api.hyperliquid.xyz"
         self.session = requests.Session()
-        self.session.headers.update({"Content-Type": "application/json"})
-        self._logger = logging.getLogger(__name__)
 
-    def post(self, url_path: str, payload: Any = None) -> Any:
-        payload = payload or {}
-        url = self.base_url + url_path
-        response = self.session.post(url, json=payload)
-        self._handle_exception(response)
+    @retry_on_failure(max_retries=3)
+    def post(self, endpoint: str, payload: Dict[str, Any]) -> Any:
+        """Make a POST request to the API with retry mechanism.
+        
+        Args:
+            endpoint: API endpoint
+            payload: Request payload
+            
+        Returns:
+            API response
+            
+        Raises:
+            APIError: If the request fails
+        """
         try:
+            response = self.session.post(
+                f"{self.base_url}{endpoint}",
+                json=payload,
+                headers={"Content-Type": "application/json"}
+            )
+            response.raise_for_status()
             return response.json()
-        except ValueError:
-            return {"error": f"Could not parse JSON: {response.text}"}
-
-    def _handle_exception(self, response):
-        status_code = response.status_code
-        if status_code < 400:
-            return
-        if 400 <= status_code < 500:
-            try:
-                err = json.loads(response.text)
-            except JSONDecodeError:
-                raise ClientError(status_code, None, response.text, None, response.headers)
-            if err is None:
-                raise ClientError(status_code, None, response.text, None, response.headers)
-            error_data = err.get("data")
-            raise ClientError(status_code, err["code"], err["msg"], response.headers, error_data)
-        raise ServerError(status_code, response.text)
+        except requests.exceptions.RequestException as e:
+            raise APIError(
+                f"API request failed: {str(e)}",
+                status_code=getattr(e.response, 'status_code', None),
+                response=getattr(e.response, 'text', None)
+            )
+        except json.JSONDecodeError as e:
+            raise APIError(f"Failed to decode API response: {str(e)}")
